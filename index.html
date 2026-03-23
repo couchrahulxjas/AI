@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Algorithm Visualizer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <!-- INTRO SCREEN (Delete this block if you don't want it) -->
+    <div id="intro-screen" class="intro-screen">
+        <div class="intro-content">
+            <h1>Algorithm Visualizer</h1>
+            <p class="subtitle">A comprehensive exploration of core pathfinding strategies.</p>
+
+            <div class="algo-cards">
+                <div class="algo-card">
+                    <h3>BFS (Breadth-First)</h3>
+                    <p>Explores equally in all directions. Guarantees the shortest path on unweighted grids but can be
+                        slow.</p>
+                </div>
+                <div class="algo-card">
+                    <h3>DFS (Depth-First)</h3>
+                    <p>Plunges as deep as possible before backtracking. Uses minimal memory but rarely finds shortest
+                        paths.</p>
+                </div>
+                <div class="algo-card">
+                    <h3>DLS (Depth-Limited)</h3>
+                    <p>A constrained Depth-First Search that stops exploring at a specific depth limit to prevent
+                        infinite loops.</p>
+                </div>
+                <div class="algo-card">
+                    <h3>UCS (Uniform Cost)</h3>
+                    <p>Accounts for variable node weights (like terrain). Guarantees the cheapest overall path.</p>
+                </div>
+                <div class="algo-card">
+                    <h3>Greedy Best-First</h3>
+                    <p>Uses a heuristic to guess the closest path. Extremely fast, but doesn't guarantee the optimal
+                        route.</p>
+                </div>
+                <div class="algo-card">
+                    <h3>A* Search</h3>
+                    <p>The gold standard. Combines actual cost and heuristic prediction to guarantee the optimal path
+                        efficiently.</p>
+                </div>
+            </div>
+
+            <button id="enter-btn" class="enter-btn">LAUNCH VISUALIZER</button>
+        </div>
+    </div>
+    <!-- END OF INTRO SCREEN -->
+
+    <header>
+        <h1>Algorithm Visualizer</h1>
+    </header>
+
+    <div class="controls">
+        <div class="control-group">
+            <label for="maze">MAZE</label>
+            <select id="maze">
+                <option value="basic">Basic Grid</option>
+                <option value="weighted">Weighted Grid</option>
+                <option value="obstacles">Obstacles</option>
+                <option value="random">Random (DFS)</option>
+                <option value="spiral">Spiral Pattern</option>
+                <option value="staircase">Staircase Pattern</option>
+                <option value="stripes">Vertical Stripes</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="algorithm">ALGORITHM</label>
+            <select id="algorithm">
+                <option value="bfs">BFS</option>
+                <option value="dfs">DFS</option>
+                <option value="dls">DLS</option>
+                <option value="ucs">UCS</option>
+                <option value="greedy">Greedy</option>
+                <option value="astar">A*</option>
+            </select>
+        </div>
+
+        <div class="control-group slider-container">
+            <label for="speed">SPEED</label>
+            <input type="range" id="speed" min="10" max="200" value="100">
+        </div>
+
+        <div class="control-buttons">
+            <button id="run-btn">RUN</button>
+            <button id="reset-btn">RESET</button>
+        </div>
+    </div>
+
+    <div class="stats">
+        <div class="stat"><span class="label">VISITED:</span> <span id="stat-visited" class="value">0</span></div>
+        <div class="stat"><span class="label">PATH LEN:</span> <span id="stat-path" class="value">0</span></div>
+        <div class="stat"><span class="label">STATUS:</span> <span id="stat-status" class="value">Idling</span></div>
+    </div>
+
+    <div class="maze-container">
+        <div id="grid"></div>
+    </div>
+
+    <div class="legend">
+        <div class="legend-item">
+            <div class="box start"></div><span>Start</span>
+        </div>
+        <div class="legend-item">
+            <div class="box end"></div><span>End</span>
+        </div>
+        <div class="legend-item">
+            <div class="box unvisited"></div><span>Unvisited</span>
+        </div>
+        <div class="legend-item">
+            <div class="box wall"></div><span>Wall</span>
+        </div>
+        <div class="legend-item">
+            <div class="box queued"></div><span>Queued</span>
+        </div>
+        <div class="legend-item">
+            <div class="box exploring"></div><span>Exploring</span>
+        </div>
+        <div class="legend-item">
+            <div class="box visited"></div><span>Visited</span>
+        </div>
+        <div class="legend-item">
+            <div class="box path"></div><span>Path</span>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
