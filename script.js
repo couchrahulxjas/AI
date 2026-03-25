@@ -1,689 +1,522 @@
-const ROWS = 18;
-const COLS = 22;
-let grid = [];
-let startNode = { r: 8, c: 4 };
-let endNode = { r: 8, c: 16 };
-let isRunning = false;
-let timeoutIds = [];
-let nodesVisitedCount = 0;
-let pathLengthCount = 0;
+const ROWS = 17, COLS = 23;
+const MAX_CELLS = ROWS * COLS;
+let startId = 8 * COLS + 3;
+let endId = 8 * COLS + 19;
 
+const wallGrid = new Uint8Array(MAX_CELLS);
+const hazardGrid = new Uint8Array(MAX_CELLS);
+const visited = new Uint8Array(MAX_CELLS);
+const cameFrom = new Int32Array(MAX_CELLS);
+const distArray = new Float32Array(MAX_CELLS);
+const fCostArray = new Float32Array(MAX_CELLS);
+
+let gridEl;
+let animReq;
+let isAnimating = false;
 let isDraggingStart = false;
 let isDraggingEnd = false;
+let isPaintingWall = false;
+let isPaintingHazard = false;
+let isErasing = false;
 
-function updateStats() {
-    document.getElementById('stat-visited').innerText = nodesVisitedCount;
-    document.getElementById('stat-path').innerText = pathLengthCount;
-}
-
-function setStatus(status) {
-    document.getElementById('stat-status').innerText = status;
-}
-
-const sleep = (ms) => new Promise(resolve => {
-    const id = setTimeout(resolve, ms);
-    timeoutIds.push(id);
-});
-
-function clearTimeouts() {
-    timeoutIds.forEach(id => clearTimeout(id));
-    timeoutIds = [];
-}
-
-class SimplePQ {
-    constructor() {
-        this.elements = [];
-    }
-    enqueue(element, priority) {
-        this.elements.push({ element, priority });
-    }
-    dequeue() {
-        if (this.isEmpty()) return null;
-        let minIndex = 0;
-        for (let i = 1; i < this.elements.length; i++) {
-            if (this.elements[i].priority < this.elements[minIndex].priority) {
-                minIndex = i;
-            }
+class MinHeap {
+    constructor() { this.data = []; }
+    push(val, cost) {
+        this.data.push({ val, cost });
+        let idx = this.data.length - 1;
+        while (idx > 0) {
+            let pIdx = (idx - 1) >> 1;
+            if (this.data[pIdx].cost <= this.data[idx].cost) break;
+            let tmp = this.data[pIdx];
+            this.data[pIdx] = this.data[idx];
+            this.data[idx] = tmp;
+            idx = pIdx;
         }
-        return this.elements.splice(minIndex, 1)[0].element;
     }
-    isEmpty() {
-        return this.elements.length === 0;
+    pop() {
+        if (this.data.length === 0) return null;
+        if (this.data.length === 1) return this.data.pop();
+        let root = this.data[0];
+        this.data[0] = this.data.pop();
+        let idx = 0;
+        let len = this.data.length;
+        while (true) {
+            let left = (idx << 1) + 1;
+            let right = left + 1;
+            let swap = -1;
+            if (left < len && this.data[left].cost < this.data[idx].cost) swap = left;
+            if (right < len && this.data[right].cost < (swap === -1 ? this.data[idx].cost : this.data[left].cost)) swap = right;
+            if (swap === -1) break;
+            let tmp = this.data[swap];
+            this.data[swap] = this.data[idx];
+            this.data[idx] = tmp;
+            idx = swap;
+        }
+        return root;
+    }
+    isEmpty() { return this.data.length === 0; }
+}
+
+function getNeighbors(idx) {
+    let r = Math.floor(idx / COLS), c = idx % COLS;
+    let n = [];
+    if (r > 0) n.push(idx - COLS);
+    if (c < COLS - 1) n.push(idx + 1);
+    if (r < ROWS - 1) n.push(idx + COLS);
+    if (c > 0) n.push(idx - 1);
+    return n;
+}
+
+function paintCell(i) {
+    let dom = gridEl.children[i];
+    if (isPaintingWall) {
+        wallGrid[i] = 1; hazardGrid[i] = 0; dom.className = 'node wall';
+    } else if (isPaintingHazard) {
+        hazardGrid[i] = 1; wallGrid[i] = 0; dom.className = 'node hazard';
+    } else if (isErasing) {
+        wallGrid[i] = 0; hazardGrid[i] = 0; dom.className = 'node empty';
     }
 }
 
-function moveStartNode(row, col) {
-    if (grid[row][col].isEnd) return;
-    const oldR = startNode.r;
-    const oldC = startNode.c;
-    grid[oldR][oldC].isStart = false;
-    document.getElementById(`node-${oldR}-${oldC}`).className = grid[oldR][oldC].isWall ? 'node wall' : 'node unvisited';
-
-    startNode = { r: row, c: col };
-    grid[row][col].isStart = true;
-    grid[row][col].isWall = false;
-    document.getElementById(`node-${row}-${col}`).className = 'node start';
-}
-
-function moveEndNode(row, col) {
-    if (grid[row][col].isStart) return;
-    const oldR = endNode.r;
-    const oldC = endNode.c;
-    grid[oldR][oldC].isEnd = false;
-    document.getElementById(`node-${oldR}-${oldC}`).className = grid[oldR][oldC].isWall ? 'node wall' : 'node unvisited';
-
-    endNode = { r: row, c: col };
-    grid[row][col].isEnd = true;
-    grid[row][col].isWall = false;
-    document.getElementById(`node-${row}-${col}`).className = 'node end';
-}
-
-function initializeGrid() {
-    grid = [];
-    const gridEl = document.getElementById('grid');
+window.onload = () => {
+    gridEl = document.getElementById('grid');
     gridEl.innerHTML = '';
 
-    // Add global mouseup to cancel dragging if released outside grid
-    gridEl.onmouseleave = () => {
+    // Global mouseup to stop dragging/painting
+    window.addEventListener('mouseup', (e) => {
         isDraggingStart = false;
         isDraggingEnd = false;
-    };
-    window.onmouseup = () => {
-        isDraggingStart = false;
-        isDraggingEnd = false;
-    };
+        isPaintingWall = false;
+        isPaintingHazard = false;
+        isErasing = false;
+    });
 
-    for (let r = 0; r < ROWS; r++) {
-        const row = [];
-        for (let c = 0; c < COLS; c++) {
-            const node = {
-                r, c,
-                isWall: false,
-                weight: 1,
-                isStart: r === startNode.r && c === startNode.c,
-                isEnd: r === endNode.r && c === endNode.c,
-                isVisited: false,
-                previousNode: null,
-                cost: Infinity,
-                gCost: Infinity,
-                fCost: Infinity,
-                queuedForGreedy: false,
-                isVisitedDLS: false,
-                visitedDepth: Infinity,
-                isVisitedForCount: false
-            };
-            row.push(node);
+    // Prevent default context menu on the grid
+    gridEl.addEventListener('contextmenu', e => e.preventDefault());
 
-            const div = document.createElement('div');
-            div.id = `node-${r}-${c}`;
-            div.className = 'node unvisited';
-            if (node.isStart) {
-                div.className = 'node start';
-            } else if (node.isEnd) {
-                div.className = 'node end';
+    for (let i = 0; i < MAX_CELLS; i++) {
+        let div = document.createElement('div');
+        div.id = 'cell-' + i;
+        div.className = 'node empty';
+
+        div.addEventListener('mousedown', (e) => {
+            if (isAnimating || document.getElementById('run-btn').disabled) return;
+            e.preventDefault();
+
+            if (e.button === 2) {
+                // Right click
+                if (i !== startId && i !== endId) {
+                    if (hazardGrid[i]) isErasing = true;
+                    else isPaintingHazard = true;
+                    paintCell(i);
+                }
+                return;
             }
 
-            // Mouse events for moving start/end nodes
-            div.addEventListener('mousedown', (e) => {
-                if (isRunning) return;
-                e.preventDefault(); // Prevents selection artifacts
-                if (node.isStart) {
-                    isDraggingStart = true;
-                } else if (node.isEnd) {
-                    isDraggingEnd = true;
+            // Left click
+            if (i === startId) {
+                isDraggingStart = true;
+            } else if (i === endId) {
+                isDraggingEnd = true;
+            } else {
+                if (wallGrid[i]) isErasing = true;
+                else isPaintingWall = true;
+                paintCell(i);
+            }
+        });
+
+        div.addEventListener('mouseenter', (e) => {
+            if (isAnimating || document.getElementById('run-btn').disabled) return;
+            if (isDraggingStart) {
+                if (i !== endId) {
+                    let oldDom = gridEl.children[startId];
+                    oldDom.className = wallGrid[startId] ? 'node wall' : (hazardGrid[startId] ? 'node hazard' : 'node empty');
+                    startId = i;
+                    wallGrid[startId] = 0; hazardGrid[startId] = 0;
+                    gridEl.children[startId].className = 'node start';
                 }
-            });
-
-            div.addEventListener('mouseenter', (e) => {
-                if (isRunning) return;
-                if (isDraggingStart) {
-                    moveStartNode(r, c);
-                } else if (isDraggingEnd) {
-                    moveEndNode(r, c);
+            } else if (isDraggingEnd) {
+                if (i !== startId) {
+                    let oldDom = gridEl.children[endId];
+                    oldDom.className = wallGrid[endId] ? 'node wall' : (hazardGrid[endId] ? 'node hazard' : 'node empty');
+                    endId = i;
+                    wallGrid[endId] = 0; hazardGrid[endId] = 0;
+                    gridEl.children[endId].className = 'node end';
                 }
-            });
+            } else if (isPaintingWall || isPaintingHazard || isErasing) {
+                if (i !== startId && i !== endId) {
+                    paintCell(i);
+                }
+            }
+        });
 
-            div.addEventListener('mouseup', () => {
-                isDraggingStart = false;
-                isDraggingEnd = false;
-            });
-
-            gridEl.appendChild(div);
-        }
-        grid.push(row);
+        gridEl.appendChild(div);
     }
-    nodesVisitedCount = 0;
-    pathLengthCount = 0;
-    updateStats();
-    setStatus('Idling');
+
+    document.getElementById('reset-btn').addEventListener('click', () => {
+        if (isAnimating) cancelAnimationFrame(animReq);
+        isAnimating = false;
+        document.getElementById('run-btn').disabled = false;
+
+        // Remove visuals but retain walls and hazards
+        for (let i = 0; i < MAX_CELLS; i++) {
+            if (i === startId || i === endId) continue;
+            let dom = gridEl.children[i];
+            if (dom.className.includes('exploring') || dom.className.includes('path')) {
+                dom.className = wallGrid[i] ? 'node wall' : (hazardGrid[i] ? 'node hazard' : 'node empty');
+            }
+        }
+        document.getElementById('stat-explored').innerText = '000';
+        document.getElementById('stat-length').innerText = '—';
+        updateStatusLabel('READY', 'status-ready', `SYSTEM RESET — custom map state preserved`);
+    });
+
+    document.getElementById('scenario').addEventListener('change', (e) => {
+        if (isAnimating) cancelAnimationFrame(animReq);
+        isAnimating = false;
+        document.getElementById('run-btn').disabled = false;
+        loadScenario(e.target.value);
+    });
+
+    document.getElementById('algorithm').addEventListener('change', (e) => {
+        let name = e.target.options[e.target.selectedIndex].text.split(' —')[0];
+        document.getElementById('stat-algo').innerText = name;
+    });
+
+    document.getElementById('run-btn').addEventListener('click', () => {
+        if (isAnimating) return;
+        prepareGridForRun();
+
+        let algoId = document.getElementById('algorithm').value;
+        let res = runAlgorithm(algoId);
+        animateResult(res.visitedOrder, res.path);
+    });
+
+    // Initial setup
+    document.getElementById('stat-algo').innerText = document.getElementById('algorithm').options[document.getElementById('algorithm').selectedIndex].text.split(' —')[0];
+    loadScenario('flood');
+};
+
+function prepareGridForRun() {
+    for (let i = 0; i < MAX_CELLS; i++) {
+        if (i === startId || i === endId) continue;
+        let dom = gridEl.children[i];
+        if (dom.className.includes('exploring') || dom.className.includes('path')) {
+            dom.className = wallGrid[i] ? 'node wall' : (hazardGrid[i] ? 'node hazard' : 'node empty');
+        }
+    }
+    document.getElementById('stat-explored').innerText = '000';
+    document.getElementById('stat-length').innerText = '—';
+    updateStatusLabel('RUNNING', 'status-running', `RUNNING ${document.getElementById('stat-algo').innerText}...`);
+    document.getElementById('run-btn').disabled = true;
 }
 
-function generateMaze() {
-    if (isRunning) return;
-    const type = document.getElementById('maze').value;
-    initializeGrid();
-    if (type === 'basic') return;
+function updateStatusLabel(shortText, cls, longText) {
+    let st = document.getElementById('stat-status');
+    st.innerText = shortText;
+    st.className = `value ${cls}`;
+    if (longText) document.getElementById('status-bar').innerText = longText;
+}
 
-    if (type === 'weighted') {
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                let node = grid[r][c];
-                if (!node.isStart && !node.isEnd) {
-                    if (Math.random() < 0.25) {
-                        node.weight = 5;
-                        const el = document.getElementById(`node-${r}-${c}`);
-                        el.classList.add('weight');
-                        el.innerHTML = 'W'; // Indicates weight
-                    }
-                }
+function loadScenario(type) {
+    wallGrid.fill(0);
+    hazardGrid.fill(0);
+
+    if (type === 'flood') {
+        for (let c = 5; c < 20; c += 4) {
+            for (let r = 0; r < 14; r++) wallGrid[r * COLS + c] = 1;
+        }
+        for (let c = 7; c < 22; c += 4) {
+            for (let r = 4; r < ROWS; r++) wallGrid[r * COLS + c] = 1;
+        }
+        for (let r = 1; r < 5; r++) {
+            for (let c = 15; c < 22; c++) hazardGrid[r * COLS + c] = 1;
+        }
+    } else if (type === 'fire') {
+        for (let i = 0; i < MAX_CELLS; i++) {
+            if (i !== startId && i !== endId && Math.random() < 0.15) wallGrid[i] = 1;
+        }
+        for (let r = 12; r < 16; r++) {
+            for (let c = 14; c < 22; c++) hazardGrid[r * COLS + c] = 1;
+        }
+    } else if (type === 'earthquake') {
+        for (let r = 2; r < ROWS - 2; r += 2) {
+            for (let c = 2; c < COLS - 2; c += 2) {
+                wallGrid[r * COLS + c] = 1;
+                wallGrid[(r + 1) * COLS + c] = 1;
             }
         }
-    } else if (type === 'obstacles') {
-        for (let r = 0; r < ROWS; r++) {
+        for (let r = 6; r < 11; r++) {
+            for (let c = 9; c < 14; c++) hazardGrid[r * COLS + c] = 1;
+        }
+    } else if (type === 'tsunami') { // massive continuous hazard blocks
+        for (let r = 12; r < ROWS; r++) {
             for (let c = 0; c < COLS; c++) {
-                let node = grid[r][c];
-                if (!node.isStart && !node.isEnd) {
-                    if (Math.random() < 0.25) {
-                        node.isWall = true;
-                        const el = document.getElementById(`node-${r}-${c}`);
-                        el.className = 'node wall';
-                    }
+                if (Math.random() < 0.8) hazardGrid[r * COLS + c] = 1;
+            }
+        }
+        for (let i = 0; i < MAX_CELLS; i++) {
+            if (Math.random() < 0.1 && Math.floor(i / COLS) < 12) wallGrid[i] = 1;
+        }
+    } else if (type === 'meteor') { // multiple hazard craters
+        let centers = [
+            { r: 4, c: 10 }, { r: 12, c: 6 }, { r: 8, c: 18 }
+        ];
+        for (let ctr of centers) {
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    let d = Math.abs(r - ctr.r) + Math.abs(c - ctr.c);
+                    if (d <= 2) hazardGrid[r * COLS + c] = 1;
+                    else if (d === 3 && Math.random() < 0.5) wallGrid[r * COLS + c] = 1;
                 }
             }
         }
     } else if (type === 'random') {
-        // DFS Maze Generation
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                grid[r][c].isWall = true;
-                const el = document.getElementById(`node-${r}-${c}`);
-                el.className = 'node wall';
-                el.innerHTML = '';
+        for (let i = 0; i < MAX_CELLS; i++) {
+            if (i !== startId && i !== endId && Math.random() < 0.18) wallGrid[i] = 1;
+        }
+        let hazCount = 8;
+        while (hazCount > 0) {
+            let id = Math.floor(Math.random() * MAX_CELLS);
+            if (id !== startId && id !== endId && !wallGrid[id] && !hazardGrid[id]) {
+                hazardGrid[id] = 1; hazCount--;
             }
         }
+    }
 
-        const stack = [{ r: startNode.r, c: startNode.c }];
-        grid[startNode.r][startNode.c].isWall = false;
+    // Ensure start and end points stand out and ignore setup overlaps safely
+    wallGrid[startId] = 0; hazardGrid[startId] = 0;
+    wallGrid[endId] = 0; hazardGrid[endId] = 0;
+
+    for (let i = 0; i < MAX_CELLS; i++) {
+        let dom = gridEl.children[i];
+        if (i === startId) { dom.className = 'node start'; continue; }
+        if (i === endId) { dom.className = 'node end'; continue; }
+        if (wallGrid[i]) dom.className = 'node wall';
+        else if (hazardGrid[i]) dom.className = 'node hazard';
+        else dom.className = 'node empty';
+    }
+
+    document.getElementById('stat-explored').innerText = '000';
+    document.getElementById('stat-length').innerText = '—';
+
+    let msg = `SCENARIO LOADED — ${type} — initialized`;
+    if (type === 'flood') msg = `SCENARIO LOADED — flood — rising water from east`;
+    if (type === 'fire') msg = `SCENARIO LOADED — fire — scattered fires spreading`;
+    if (type === 'earthquake') msg = `SCENARIO LOADED — earthquake — collapsed structures`;
+    if (type === 'tsunami') msg = `SCENARIO LOADED — tsunami — critical coastal flooding`;
+    if (type === 'meteor') msg = `SCENARIO LOADED — meteor — multiple impact craters`;
+    if (type === 'random') msg = `SCENARIO LOADED — random — unknown hazard zone`;
+    updateStatusLabel('READY', 'status-ready', msg);
+    document.getElementById('run-btn').disabled = false;
+}
+
+function runAlgorithm(algoId) {
+    visited.fill(0);
+    cameFrom.fill(-1);
+    distArray.fill(Infinity);
+    fCostArray.fill(Infinity);
+
+    let visitedOrder = [];
+    let path = [];
+    let found = false;
+
+    if (algoId === 'bfs') {
+        let q = [startId];
+        visited[startId] = 1;
+        let head = 0;
+        while (head < q.length) {
+            let curr = q[head++];
+            visitedOrder.push(curr);
+            if (curr === endId) { found = true; break; }
+            for (let n of getNeighbors(curr)) {
+                if (!wallGrid[n] && visited[n] === 0) {
+                    visited[n] = 1;
+                    cameFrom[n] = curr;
+                    q.push(n);
+                }
+            }
+        }
+    } else if (algoId === 'dfs') {
+        let stack = [startId];
+        while (stack.length > 0) {
+            let curr = stack.pop();
+            if (visited[curr]) continue;
+            visited[curr] = 1;
+            visitedOrder.push(curr);
+            if (curr === endId) { found = true; break; }
+            let nbs = getNeighbors(curr).reverse();
+            for (let n of nbs) {
+                if (!wallGrid[n] && visited[n] === 0) {
+                    cameFrom[n] = curr;
+                    stack.push(n);
+                }
+            }
+        }
+    } else if (algoId === 'dls') {
+        let stack = [{ id: startId, d: 0, path: [startId] }];
+        const depthArray = new Int32Array(MAX_CELLS);
+        depthArray.fill(999999);
 
         while (stack.length > 0) {
-            const current = stack[stack.length - 1];
-            const neighbors = [];
-            const dirs = [[-2, 0], [2, 0], [0, -2], [0, 2]];
+            let { id: curr, d: depth, path: currentPath } = stack.pop();
+            if (depth > 24) continue;
+            if (depthArray[curr] <= depth) continue;
+            depthArray[curr] = depth;
+            visited[curr] = 1;
 
-            for (const [dr, dc] of dirs) {
-                const nr = current.r + dr;
-                const nc = current.c + dc;
-                if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && grid[nr][nc].isWall) {
-                    neighbors.push({ r: nr, c: nc, dr, dc });
-                }
-            }
+            if (visitedOrder.indexOf(curr) === -1) visitedOrder.push(curr);
+            if (curr === endId) { found = true; path = currentPath; break; }
 
-            if (neighbors.length > 0) {
-                const next = neighbors[Math.floor(Math.random() * neighbors.length)];
-
-                grid[current.r + next.dr / 2][current.c + next.dc / 2].isWall = false;
-                grid[next.r][next.c].isWall = false;
-
-                stack.push({ r: next.r, c: next.c });
-            } else {
-                stack.pop();
-            }
-        }
-
-        grid[startNode.r][startNode.c].isWall = false;
-        grid[endNode.r][endNode.c].isWall = false;
-
-        // Make sure end node connects to the maze
-        if (grid[endNode.r - 1][endNode.c].isWall && grid[endNode.r + 1][endNode.c].isWall &&
-            grid[endNode.r][endNode.c - 1].isWall && grid[endNode.r][endNode.c + 1].isWall) {
-            grid[endNode.r][endNode.c - 1].isWall = false;
-        }
-
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const node = grid[r][c];
-                const el = document.getElementById(`node-${r}-${c}`);
-                if (node.isStart) {
-                    el.className = 'node start';
-                } else if (node.isEnd) {
-                    el.className = 'node end';
-                } else if (node.isWall) {
-                    el.className = 'node wall';
-                } else {
-                    el.className = 'node unvisited';
+            let nbs = getNeighbors(curr).reverse();
+            for (let n of nbs) {
+                if (!wallGrid[n]) {
+                    let newPath = currentPath.slice();
+                    newPath.push(n);
+                    stack.push({ id: n, d: depth + 1, path: newPath });
                 }
             }
         }
-    } else if (type === 'spiral') {
-        for (let loop = 0; loop < Math.min(ROWS, COLS) / 2; loop += 2) {
-            for (let c = loop; c < COLS - loop; c++) {
-                if (!grid[loop][c].isStart && !grid[loop][c].isEnd) {
-                    grid[loop][c].isWall = true;
-                    document.getElementById(`node-${loop}-${c}`).className = 'node wall';
-                }
-            }
-            for (let r = loop; r < ROWS - loop; r++) {
-                if (!grid[r][COLS - 1 - loop].isStart && !grid[r][COLS - 1 - loop].isEnd) {
-                    grid[r][COLS - 1 - loop].isWall = true;
-                    document.getElementById(`node-${r}-${COLS - 1 - loop}`).className = 'node wall';
-                }
-            }
-            for (let c = loop; c < COLS - loop; c++) {
-                if (!grid[ROWS - 1 - loop][c].isStart && !grid[ROWS - 1 - loop][c].isEnd) {
-                    grid[ROWS - 1 - loop][c].isWall = true;
-                    document.getElementById(`node-${ROWS - 1 - loop}-${c}`).className = 'node wall';
-                }
-            }
-            for (let r = loop + 2; r < ROWS - loop; r++) {
-                if (!grid[r][loop].isStart && !grid[r][loop].isEnd) {
-                    grid[r][loop].isWall = true;
-                    document.getElementById(`node-${r}-${loop}`).className = 'node wall';
-                }
-            }
-        }
-    } else if (type === 'staircase') {
-        let currentR = ROWS - 2;
-        let currentC = 1;
-        while (currentC < COLS - 1) {
-            if (currentR !== 0 && currentR !== ROWS - 1 && Math.random() > 0.05) {
-                if (!grid[currentR][currentC].isStart && !grid[currentR][currentC].isEnd) {
-                    grid[currentR][currentC].isWall = true;
-                    document.getElementById(`node-${currentR}-${currentC}`).className = 'node wall';
-                }
-            }
-            currentR--;
-            currentC++;
+    } else if (algoId === 'ucs') {
+        let heap = new MinHeap();
+        distArray[startId] = 0;
+        heap.push(startId, 0);
 
-            if (currentR < 0) {
-                currentR = ROWS - 2;
-                currentC += 2;
+        while (!heap.isEmpty()) {
+            let curr = heap.pop().val;
+            if (visited[curr]) continue;
+            visited[curr] = 1;
+            visitedOrder.push(curr);
+            if (curr === endId) { found = true; break; }
+
+            for (let n of getNeighbors(curr)) {
+                if (!wallGrid[n] && !visited[n]) {
+                    let cost = hazardGrid[n] ? 5 : 1;
+                    let newDist = distArray[curr] + cost;
+                    if (newDist < distArray[n]) {
+                        distArray[n] = newDist;
+                        cameFrom[n] = curr;
+                        heap.push(n, newDist);
+                    }
+                }
             }
         }
-    } else if (type === 'stripes') {
-        for (let c = 2; c < COLS - 1; c += 3) {
-            let gap = Math.floor(Math.random() * (ROWS - 2)) + 1;
-            for (let r = 0; r < ROWS; r++) {
-                if (r !== gap && r !== gap + 1) {
-                    if (!grid[r][c].isStart && !grid[r][c].isEnd) {
-                        grid[r][c].isWall = true;
-                        document.getElementById(`node-${r}-${c}`).className = 'node wall';
+    } else if (algoId === 'greedy') {
+        let heap = new MinHeap();
+        let endR = Math.floor(endId / COLS), endC = endId % COLS;
+        let getH = (id) => Math.abs(Math.floor(id / COLS) - endR) + Math.abs(id % COLS - endC);
+
+        heap.push(startId, getH(startId));
+
+        while (!heap.isEmpty()) {
+            let curr = heap.pop().val;
+            if (visited[curr]) continue;
+            visited[curr] = 1;
+            visitedOrder.push(curr);
+            if (curr === endId) { found = true; break; }
+
+            for (let n of getNeighbors(curr)) {
+                if (!wallGrid[n] && !visited[n]) {
+                    cameFrom[n] = curr;
+                    heap.push(n, getH(n));
+                }
+            }
+        }
+    } else if (algoId === 'astar') {
+        let heap = new MinHeap();
+        let endR = Math.floor(endId / COLS), endC = endId % COLS;
+        let getH = (id) => Math.abs(Math.floor(id / COLS) - endR) + Math.abs(id % COLS - endC);
+
+        distArray[startId] = 0;
+        fCostArray[startId] = getH(startId);
+        heap.push(startId, fCostArray[startId]);
+
+        while (!heap.isEmpty()) {
+            let curr = heap.pop().val;
+            if (visited[curr]) continue;
+            visited[curr] = 1;
+            visitedOrder.push(curr);
+            if (curr === endId) { found = true; break; }
+
+            for (let n of getNeighbors(curr)) {
+                if (!wallGrid[n] && !visited[n]) {
+                    let cost = hazardGrid[n] ? 5 : 1;
+                    let newDist = distArray[curr] + cost;
+                    if (newDist < distArray[n]) {
+                        distArray[n] = newDist;
+                        fCostArray[n] = newDist + getH(n);
+                        cameFrom[n] = curr;
+                        heap.push(n, fCostArray[n]);
                     }
                 }
             }
         }
     }
-}
 
-function getNeighbors(node) {
-    const neighbors = [];
-    const { r, c } = node;
-    // Top, Right, Bottom, Left order (visual appeal)
-    if (r > 0) neighbors.push(grid[r - 1][c]);
-    if (c < COLS - 1) neighbors.push(grid[r][c + 1]);
-    if (r < ROWS - 1) neighbors.push(grid[r + 1][c]);
-    if (c > 0) neighbors.push(grid[r][c - 1]);
-    return neighbors.filter(n => !n.isWall);
-}
-
-function updateNodeClass(node, className) {
-    if (node.isStart || node.isEnd) return;
-    const el = document.getElementById(`node-${node.r}-${node.c}`);
-    if (el) {
-        el.className = `node ${className}`;
-        if (node.weight > 1 && className !== 'wall') {
-            el.classList.add('weight');
+    if (found && algoId !== 'dls') {
+        let step = endId;
+        while (step !== startId && step !== -1) {
+            path.push(step);
+            step = cameFrom[step];
         }
+        path.push(startId);
+        path.reverse();
     }
+    return { visitedOrder, path, found };
 }
 
-function heuristic(nodeA, nodeB) {
-    return Math.abs(nodeA.r - nodeB.r) + Math.abs(nodeA.c - nodeB.c);
-}
+function animateResult(visitedOrder, pathOrder) {
+    isAnimating = true;
+    let vIdx = 0;
+    let pIdx = 0;
 
-function getSpeed() {
-    const val = parseInt(document.getElementById('speed').value);
-    return 210 - val;
-}
+    let speedVal = parseInt(document.getElementById('speed').value);
+    let cps = 1;
+    if (speedVal === 10) cps = MAX_CELLS;
+    else if (speedVal === 7) cps = 10;
+    else if (speedVal > 7) cps = 10 + (speedVal - 7) * 5;
+    else cps = speedVal;
 
-function softReset() {
-    if (isRunning) return;
-    clearTimeouts();
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const node = grid[r][c];
-            node.isVisited = false;
-            node.previousNode = null;
-            node.cost = Infinity;
-            node.gCost = Infinity;
-            node.fCost = Infinity;
-            node.queuedForGreedy = false;
-            node.isVisitedDLS = false;
-            node.visitedDepth = Infinity;
-            node.isVisitedForCount = false;
+    let pCps = Math.max(1, Math.floor(cps / 2));
+    if (speedVal === 10) pCps = MAX_CELLS;
 
-            if (!node.isWall && !node.isStart && !node.isEnd) {
-                updateNodeClass(node, 'unvisited');
+    function frame() {
+        if (!isAnimating) return;
+
+        let vDrawCount = 0;
+        while (vIdx < visitedOrder.length && vDrawCount < cps) {
+            let id = visitedOrder[vIdx];
+            if (id !== startId && id !== endId) {
+                gridEl.children[id].className = 'node exploring';
             }
-        }
-    }
-    nodesVisitedCount = 0;
-    pathLengthCount = 0;
-    updateStats();
-    setStatus('Idling');
-}
-
-async function runAlgorithm() {
-    if (isRunning) return;
-
-    softReset();
-
-    isRunning = true;
-    document.getElementById('run-btn').disabled = true;
-    document.getElementById('maze').disabled = true;
-    setStatus('Running...');
-
-    const algo = document.getElementById('algorithm').value;
-    const startObj = grid[startNode.r][startNode.c];
-    const endObj = grid[endNode.r][endNode.c];
-    let found = false;
-
-    if (algo === 'bfs') found = await runBFS(startObj, endObj);
-    else if (algo === 'dfs') found = await runDFS(startObj, endObj);
-    else if (algo === 'dls') found = await runDLS(startObj, endObj);
-    else if (algo === 'ucs') found = await runUCS(startObj, endObj);
-    else if (algo === 'greedy') found = await runGreedy(startObj, endObj);
-    else if (algo === 'astar') found = await runAStar(startObj, endObj);
-
-    if (!isRunning) {
-        // Was aborted
-        document.getElementById('run-btn').disabled = false;
-        document.getElementById('maze').disabled = false;
-        return;
-    }
-
-    if (found) {
-        setStatus('Drawing Path...');
-        await drawPath(startObj, endObj);
-        setStatus('Completed');
-    } else {
-        setStatus('No Path Found');
-    }
-    isRunning = false;
-    document.getElementById('run-btn').disabled = false;
-    document.getElementById('maze').disabled = false;
-}
-
-async function runBFS(startObj, endObj) {
-    const queue = [startObj];
-    startObj.isVisited = true;
-
-    while (queue.length > 0 && isRunning) {
-        const current = queue.shift();
-
-        updateNodeClass(current, 'exploring');
-        await sleep(getSpeed());
-        if (!isRunning) break;
-
-        if (current === endObj) return true;
-
-        updateNodeClass(current, 'visited');
-        if (current !== startObj) {
-            nodesVisitedCount++;
-            updateStats();
+            vIdx++; vDrawCount++;
+            document.getElementById('stat-explored').innerText = String(vIdx).padStart(3, '0');
         }
 
-        const neighbors = getNeighbors(current);
-        for (let n of neighbors) {
-            if (!n.isVisited) {
-                n.isVisited = true;
-                n.previousNode = current;
-                queue.push(n);
-                updateNodeClass(n, 'queued');
-            }
-        }
-    }
-    return false;
-}
-
-async function runDFS(startObj, endObj) {
-    const stack = [startObj];
-
-    while (stack.length > 0 && isRunning) {
-        const current = stack.pop();
-
-        if (current.isVisited) continue;
-        current.isVisited = true;
-
-        updateNodeClass(current, 'exploring');
-        await sleep(getSpeed());
-        if (!isRunning) break;
-
-        if (current === endObj) return true;
-
-        updateNodeClass(current, 'visited');
-        if (current !== startObj) {
-            nodesVisitedCount++;
-            updateStats();
-        }
-
-        const neighbors = getNeighbors(current);
-        // Reverse so visual exploration looks right (Top right down left visually)
-        for (let n of neighbors.reverse()) {
-            if (!n.isVisited) {
-                // we set previousNode here, but it might be overwritten if pushed multiple times 
-                // in standard DFS, this gives 'a' path, not necessarily shortest.
-                n.previousNode = current;
-                stack.push(n);
-                updateNodeClass(n, 'queued');
-            }
-        }
-    }
-    return false;
-}
-
-async function runDLS(startObj, endObj) {
-    const limit = 25;
-    const stack = [{ node: startObj, depth: 0 }];
-
-    while (stack.length > 0 && isRunning) {
-        const { node: current, depth } = stack.pop();
-
-        if (current.isVisitedDLS && current.visitedDepth <= depth) continue;
-        current.isVisitedDLS = true;
-        current.visitedDepth = depth;
-
-        updateNodeClass(current, 'exploring');
-        await sleep(getSpeed());
-        if (!isRunning) break;
-
-        if (current === endObj) return true;
-
-        updateNodeClass(current, 'visited');
-
-        if (current !== startObj && !current.isVisitedForCount) {
-            current.isVisitedForCount = true;
-            nodesVisitedCount++;
-            updateStats();
-        }
-
-        if (depth < limit) {
-            const neighbors = getNeighbors(current);
-            for (let n of neighbors.reverse()) {
-                n.previousNode = current;
-                stack.push({ node: n, depth: depth + 1 });
-                updateNodeClass(n, 'queued');
-            }
-        }
-    }
-    return false;
-}
-
-async function runUCS(startObj, endObj) {
-    const pq = new SimplePQ();
-    startObj.cost = 0;
-    pq.enqueue(startObj, 0);
-
-    while (!pq.isEmpty() && isRunning) {
-        const current = pq.dequeue();
-
-        if (current.isVisited) continue;
-        current.isVisited = true;
-
-        updateNodeClass(current, 'exploring');
-        await sleep(getSpeed());
-        if (!isRunning) break;
-
-        if (current === endObj) return true;
-
-        updateNodeClass(current, 'visited');
-        if (current !== startObj) {
-            nodesVisitedCount++;
-            updateStats();
-        }
-
-        const neighbors = getNeighbors(current);
-        for (let n of neighbors) {
-            if (!n.isVisited) {
-                const newCost = current.cost + n.weight;
-                if (newCost < n.cost) {
-                    n.cost = newCost;
-                    n.previousNode = current;
-                    pq.enqueue(n, newCost);
-                    updateNodeClass(n, 'queued');
+        if (vIdx >= visitedOrder.length) {
+            let pDrawCount = 0;
+            while (pIdx < pathOrder.length && pDrawCount < pCps) {
+                let id = pathOrder[pIdx];
+                if (id !== startId && id !== endId) {
+                    gridEl.children[id].className = 'node path';
                 }
+                pIdx++; pDrawCount++;
+                document.getElementById('stat-length').innerText = pIdx;
+            }
+        }
+
+        if (vIdx < visitedOrder.length || pIdx < pathOrder.length) {
+            animReq = requestAnimationFrame(frame);
+        } else {
+            isAnimating = false;
+            let count = pathOrder.length;
+            if (count > 0) {
+                updateStatusLabel('ROUTE FOUND', 'status-found', `ROUTE SECURED — ${count} cells via ${document.getElementById('stat-algo').innerText}`);
+            } else {
+                updateStatusLabel('NO ROUTE', 'status-noroute', `NO ROUTE FOUND — all paths blocked`);
             }
         }
     }
-    return false;
+
+    animReq = requestAnimationFrame(frame);
 }
-
-async function runGreedy(startObj, endObj) {
-    const pq = new SimplePQ();
-    pq.enqueue(startObj, heuristic(startObj, endObj));
-
-    while (!pq.isEmpty() && isRunning) {
-        const current = pq.dequeue();
-
-        if (current.isVisited) continue;
-        current.isVisited = true;
-
-        updateNodeClass(current, 'exploring');
-        await sleep(getSpeed());
-        if (!isRunning) break;
-
-        if (current === endObj) return true;
-
-        updateNodeClass(current, 'visited');
-        if (current !== startObj) {
-            nodesVisitedCount++;
-            updateStats();
-        }
-
-        const neighbors = getNeighbors(current);
-        for (let n of neighbors) {
-            if (!n.isVisited) {
-                if (!n.queuedForGreedy) {
-                    n.queuedForGreedy = true;
-                    n.previousNode = current;
-                    pq.enqueue(n, heuristic(n, endObj));
-                    updateNodeClass(n, 'queued');
-                }
-            }
-        }
-    }
-    return false;
-}
-
-async function runAStar(startObj, endObj) {
-    const pq = new SimplePQ();
-    startObj.gCost = 0;
-    startObj.fCost = heuristic(startObj, endObj);
-    pq.enqueue(startObj, startObj.fCost);
-
-    while (!pq.isEmpty() && isRunning) {
-        const current = pq.dequeue();
-
-        if (current.isVisited) continue;
-        current.isVisited = true;
-
-        updateNodeClass(current, 'exploring');
-        await sleep(getSpeed());
-        if (!isRunning) break;
-
-        if (current === endObj) return true;
-
-        updateNodeClass(current, 'visited');
-        if (current !== startObj) {
-            nodesVisitedCount++;
-            updateStats();
-        }
-
-        const neighbors = getNeighbors(current);
-        for (let n of neighbors) {
-            if (!n.isVisited) {
-                const tentative = current.gCost + n.weight;
-                if (tentative < n.gCost) {
-                    n.gCost = tentative;
-                    n.fCost = n.gCost + heuristic(n, endObj);
-                    n.previousNode = current;
-                    pq.enqueue(n, n.fCost);
-                    updateNodeClass(n, 'queued');
-                }
-            }
-        }
-    }
-    return false;
-}
-
-async function drawPath(startObj, endObj) {
-    let curr = endObj.previousNode;
-    const path = [];
-    while (curr && curr !== startObj) {
-        path.push(curr);
-        curr = curr.previousNode;
-    }
-    path.reverse();
-
-    for (let p of path) {
-        if (!isRunning) break;
-        updateNodeClass(p, 'path');
-        pathLengthCount++;
-        updateStats();
-        await sleep(30);
-    }
-}
-
-function stopExecution() {
-    isRunning = false;
-    clearTimeouts();
-    document.getElementById('run-btn').disabled = false;
-    document.getElementById('maze').disabled = false;
-}
-
-window.onload = () => {
-    // Intro Screen Logic
-    const enterBtn = document.getElementById('enter-btn');
-    if (enterBtn) {
-        enterBtn.addEventListener('click', () => {
-            document.getElementById('intro-screen').classList.add('hidden');
-        });
-    }
-
-    initializeGrid();
-
-    document.getElementById('maze').addEventListener('change', generateMaze);
-    document.getElementById('run-btn').addEventListener('click', () => {
-        if (isRunning) return;
-        runAlgorithm();
-    });
-
-    document.getElementById('reset-btn').addEventListener('click', () => {
-        stopExecution();
-        softReset();
-    });
-
-    // Changing the algorithm during idling could do a soft reset
-    document.getElementById('algorithm').addEventListener('change', () => {
-        if (!isRunning) softReset();
-    });
-};
